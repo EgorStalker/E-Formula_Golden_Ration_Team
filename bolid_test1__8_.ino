@@ -58,6 +58,7 @@ int A7V = 0;
 
 // const int divider = 45;
 
+
 const int maxSpeedValue = 255;
 int maxSpeed = maxSpeedValue;
 
@@ -77,7 +78,7 @@ int lastError = 0;
 
 int integral = 0;
 //                                                                                          18.44           18.43   18.22   17.77
-float Kp = 0.19; // Пропорційний коефіцієнт  0.5     0.1 - 1.0      0.75      0.33    0.55            0.55    0.55   0.546   0.54615     0.547     0.547
+float Kp = 0.18; // Пропорційний коефіцієнт  0.5     0.1 - 1.0      0.75      0.33    0.55            0.55    0.55   0.546   0.54615     0.547     0.547
 float Ki = 0; // Інтегральний коефіцієнт 0.01    0.001 - 0.05   0.025     0.015   0.02    0.024  0.0262  0.0264  0.0264   0.02645   0.02647   0.02647
 float Kd = 0.8; // Диференціальний коефіцієнт 0.2   0.1 - 1.0       0.5       0.9     0.9    0.88   0.865   0.862   0.862    0.8605     0.862     0.868
 
@@ -86,6 +87,10 @@ int rightMotorSpeed = 0;
 
 const int blackLineValue = 250;
 
+int lapCounter = 0;                 
+bool onFinishLine = false;          
+unsigned long finishLineTimer = 0; 
+
 bool flagA0 = false;
 bool flagA7 = false;
 
@@ -93,7 +98,6 @@ bool isCalibrated = false;
 
 int blackSensors = 0;
 
-//uint16_t position = qtr.readLineBlack(sensorValues);
 uint16_t position = qtrrc.readLine(sensorValues);
 
 int error = 0;
@@ -125,10 +129,9 @@ char buffer[9];
 float s1, s2;
 int kl = 0;
 void setup() {
-  // put your setup code here, to run once:
-  //qtr.setTypeAnalog();
-  //qtr.setSensorPins((const uint8_t[]){13, A0, A1, A2, A3, A4, A5, 2}, SensorCount);
-
+  int lapCounter = 0;                 
+  bool onFinishLine = false;          
+  unsigned long finishLineTimer = 0; 
   pinMode(LEFT_MOTOR_PIN2, OUTPUT);
   pinMode(LEFT_MOTOR_PIN1, OUTPUT);
   pinMode(LEFT_PWM, OUTPUT);
@@ -143,7 +146,9 @@ void setup() {
 
   Serial.begin(9600);
   //softSerial.begin(9600);
-  
+  lapCounter = 0;                 // Обнуляем круги для нового заезда
+  finishLineTimer = millis();     // Запоминаем время старта (millis() возвращает время работы Ардуино в мс)
+  onFinishLine = false;           // Робот начинает движение вне финишной линии
 }
 
 void loop() {
@@ -217,7 +222,32 @@ float sp2 = 0;
   
   if (isRunning) {
 
+    int blackSensors = 0;
+  for (int i = 0; i < SensorCount; i++) {
+    if (sensorValues[i] > 650) { 
+      blackSensors++;
+  }
+}
 
+  if (blackSensors >= 6) {
+    if (!onFinishLine && (millis() - finishLineTimer > 1500)) {
+      lapCounter++;
+      finishLineTimer = millis(); 
+    onFinishLine = true;        
+    
+    Serial.print("Линия обнаружена! Круг №: ");
+    Serial.println(lapCounter);
+  }
+} else if (blackSensors <= 3) {
+  onFinishLine = false;
+}
+
+if (lapCounter >= 2) { 
+  driveMotors(0, 0); 
+  isRunning = false;
+  Serial.println("Финиш! Робот успешно проехал дистанцию.");
+  delay(2000); 
+}
     // Зчитування позиції (0-7000)
     position = qtrrc.readLine(sensorValues);
 
@@ -258,7 +288,7 @@ float sp2 = 0;
     // Керування моторами
 
     driveMotors(leftMotorSpeed, rightMotorSpeed);
-
+    
    
     
   } else {
