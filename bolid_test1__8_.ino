@@ -1,12 +1,12 @@
 // Update:
-// Зупиняється після другого круга.
+// Зупиняється через 500 мс після другого круга. 
+// Затримка старту після кнопки — 500 мс.
+// Автостоп прибрано (пошук на швидкості 70).
+// Перші 500 мс після старту швидкість 150, далі 255.
 
-// Включення необхідних бібліотек
 #include <avr/io.h>
 #include <avr/interrupt.h>
-
 #include <QTRSensors.h>
-
 #include <SoftwareSerial.h>
 
 #define RIGHT_PWM 6
@@ -19,14 +19,11 @@
 
 #define START_BUTTON 2
 
-// Створення об'єкта датчика лінії
 QTRSensorsRC qtrrc((unsigned char[]) {3, 4, 7, 8, 9, 10, 11, A0}, 8); 
 
-// Кількість датчиків, які використовуються
 const uint8_t SensorCount = 8;
 uint16_t sensorValues[SensorCount];
 
-// Змінні для роботи
 int A0V = 0;
 int A3V = 0;
 int A4V = 0;
@@ -58,7 +55,11 @@ const int blackLineValue = 250;
 int lapCounter = 0;                 
 bool onFinishLine = false;          
 unsigned long finishLineTimer = 0; 
-unsigned long startRunTimer = 0; // Переменная для отсчета времени разгона после старта
+unsigned long startRunTimer = 0; 
+
+// Таймер для додаткового часу після фінішу
+unsigned long finishExtraTime = 0;
+bool isFinishing = false;
 
 bool flagA0 = false;
 bool flagA7 = false;
@@ -66,7 +67,7 @@ bool flagA7 = false;
 bool isCalibrated = false;
 int blackSensors = 0;
 
-uint16_t position = qtrrc.readLine(sensorValues);
+uint16_t position = 0;
 int error = 0;
 
 int P = 0;
@@ -106,15 +107,12 @@ void setup() {
   pinMode(13, OUTPUT);
 
   Serial.begin(9600);
-  lapCounter = 0;                 // Обнуляем круги для нового заезда
-  finishLineTimer = millis();     // Запоминаем время старта
-  onFinishLine = false;           // Робот начинает движение вне финишной линии
+  lapCounter = 0;                 
+  finishLineTimer = millis();     
+  onFinishLine = false;           
 }
 
 void loop() {
-  float sp1 = 0;
-  float sp2 = 0;  
-
   if (!isCalibrated) {
     Serial.println("Натисніть кнопку для калібрування сенсорів...");
     while (digitalRead(START_BUTTON) == HIGH) {
@@ -123,35 +121,39 @@ void loop() {
     calibrateSensorsManually();
   }
   
+  // Старт по кнопці
   if (digitalRead(START_BUTTON) == LOW && !isRunning) {
-    delay(50); // Для усунення дребезгу контактів
+    delay(50); 
     if (digitalRead(START_BUTTON) == LOW) {
       Serial.println("Старт!");
-      delay(1000); // Затримка перед початком руху
+      delay(500); // ЗМЕНШЕНО: тепер болід рушає через 500 мс після натискання
 
       countFinishLines = finishLinesValue;
       isRunning = true;
-      startRunTimer = millis(); // Запоминаем точное время старта робота
+      isFinishing = false; 
+      startRunTimer = millis(); 
     }
   } else if (digitalRead(START_BUTTON) == LOW && isRunning) {
     delay(50);
     if (digitalRead(START_BUTTON) == LOW) {
-      driveMotors(0, 0); // Зупинка моторів
-      Serial.println("Зупинка!");
+      driveMotors(0, 0); 
+      Serial.println("Зупинка користувачем!");
       delay(1000);
       isRunning = false;
+      isFinishing = false;
     }
   }
 
-  // Якщо болід запущено, виконуємо алгоритм руху
   if (isRunning) {
     
-    // Динамическое управление скоростью: первые 500 мс скорость 150, затем максимум 255
-    if (millis() - startRunTimer < 100) {
+    // Динамічне керування швидкістю (перші 500 мс швидкість 150, далі 255)
+    if (millis() - startRunTimer < 500) {
       maxSpeed = 150;
     } else {
       maxSpeed = 255;
     }
+
+    position = qtrrc.readLine(sensorValues);
 
     int blackSensors = 0;
     for (int i = 0; i < SensorCount; i++) {
@@ -166,59 +168,70 @@ void loop() {
         finishLineTimer = millis(); 
         onFinishLine = true;        
         
-        Serial.print("Линия обнаружена! Круг №: ");
+        Serial.print("Лінія виявлена! Коло №: ");
         Serial.println(lapCounter);
+
+        if (lapCounter >= 2) {
+          finishExtraTime = millis();
+          isFinishing = true;
+        }
       }
     } else if (blackSensors <= 3) {
       onFinishLine = false;
     }
 
-    if (lapCounter >= 2) { 
+    // ЗУПИНКА ПІСЛЯ 500 мс НА ФІНІШІ
+    if (isFinishing && (millis() - finishExtraTime >= 500)) { 
       driveMotors(0, 0); 
       isRunning = false;
-      Serial.println("Финиш! Робот успешно проехал дистанцию.");
+      isFinishing = false;
+      lapCounter = 0; 
+      Serial.println("Фініш! Робот проїхав додаткові 500 мс і зупинився.");
       delay(2000); 
     }
 
-    // Зчитування позиції (0-7000)
-    position = qtrrc.readLine(sensorValues);
+    if (isRunning) {
+      
+      if (blackSensors == 0) {
+        // Пошук лінії на швидкості 70 (автостоп вимкнено)
+        if (lastError > 0) {
+          driveMotors(70, 35); 
+        } else if (lastError < 0) {
+          driveMotors(35, 70); 
+        } else {
+          driveMotors(70, 70); 
+        }
+        
+      } else {
+        // ЗВИЧАЙНИЙ РУХ ПО PID
+        error = position - 3500; 
 
-    // Обчислення помилки
-    error = position - 3500; // 3500 - це позиція центру
+        P = error;
 
-    // Пропорційна складова
-    P = error;
+        integral = integral + error;
+        if (integral > 1000) integral = 1000;
+        if (integral < -1000) integral = -1000;
+        I = integral;
 
-    // Інтегральна складова
-    integral = integral + error;
+        D = error - lastError;
+        lastError = error;
 
-    // Обмеження інтегралу для запобігання перенасичення
-    if (integral > 1000) integral = 1000;
-    if (integral < -1000) integral = -1000;
-    I = integral;
+        pidValue = Kp * P + Ki * I + Kd * D;
+        
+        leftMotorSpeed = maxSpeed - pidValue;
+        rightMotorSpeed = maxSpeed + pidValue;
 
-    // Диференціальна складова
-    D = error - lastError;
-    lastError = error;
-
-    // Обчислення PID-значення
-    pidValue = Kp * P + Ki * I + Kd * D;
-    
-    // Застосування PID до швидкості моторів
-    leftMotorSpeed = maxSpeed - pidValue;
-    rightMotorSpeed = maxSpeed + pidValue;
-
-    // Обмеження швидкості
-    if (leftMotorSpeed > 255) leftMotorSpeed = 255;
-    if (leftMotorSpeed < 0) leftMotorSpeed = 0;
-    if (rightMotorSpeed > 255) rightMotorSpeed = 255;
-    if (rightMotorSpeed < 0) rightMotorSpeed = 0;
-    
-    // Керування моторами
-    driveMotors(leftMotorSpeed, rightMotorSpeed);
+        if (leftMotorSpeed > 255) leftMotorSpeed = 255;
+        if (leftMotorSpeed < 0) leftMotorSpeed = 0;
+        if (rightMotorSpeed > 255) rightMotorSpeed = 255;
+        if (rightMotorSpeed < 0) rightMotorSpeed = 0;
+        
+        driveMotors(leftMotorSpeed, rightMotorSpeed);
+      }
+    }
     
   } else {
-    driveMotors(0, 0); // Зупинка моторів
+    driveMotors(0, 0); 
   }
 }
 
@@ -230,21 +243,18 @@ void setSensorValues() {
 }
 
 void driveMotors(int leftSpeed, int rightSpeed) {
-  // Керування лівим мотором
   if (leftSpeed > -1) {
     directLeftMotorForward();
   } else {
     directLeftMotorBackward();
     leftSpeed = -leftSpeed;
   }
-  // Керування правим мотором
   if (rightSpeed > -1) {
     directRightMotorForward();
   } else {
     directRightMotorBackward();
     rightSpeed = -rightSpeed;
   }
-  // Встановлення швидкості через ШІМ
   analogWrite(LEFT_PWM, leftSpeed);
   analogWrite(RIGHT_PWM, rightSpeed);
 }
@@ -254,7 +264,6 @@ void calibrateSensorsManually() {
   digitalWrite(LED_BUILTIN, HIGH);
   delay(1000);
 
-  // Калібрування протягом рухів вліво-вправо
   for (uint16_t i = 0; i < 60; i++) {
     qtrrc.calibrate();
     delay(25);
